@@ -44,6 +44,11 @@ abstract class EpilogCutter extends LaserCutter
 
   public static boolean SIMULATE_COMMUNICATION = false;
   public static final int NETWORK_TIMEOUT = 3000;
+  /* Avoid a firmware error accumulation bug in non-axially aligned lines on
+   * the Mini 24 (at least).  This results in slightly larger jobs.
+   * This number does not scale by DPI because presumably the error is at
+   * printer-resolution. Calculated to be about 50mm. */
+  public static final int MAX_SEGMENT_LENGTH = 788;
   /* Resolutions in DPI */
 
   private static final int MINFOCUS = -500;//Minimal focus value (not mm)
@@ -702,6 +707,8 @@ abstract class EpilogCutter extends LaserCutter
       Integer currentFrequency = null;
       Float currentFocus = null;
       VectorCommand.CmdType lastType = null;
+      int lastX = 0;  // Assume we'll MOVETO before LINETO where this matters.
+      int lastY = 0;
       for (VectorCommand cmd : vp.getCommandList())
       {
         if (lastType != null && lastType == VectorCommand.CmdType.LINETO && cmd.getType() != VectorCommand.CmdType.LINETO)
@@ -738,18 +745,31 @@ abstract class EpilogCutter extends LaserCutter
           case MOVETO:
           {
             out.printf("PU%d,%d;", cmd.getX(), cmd.getY());
+	    lastX = cmd.getX();
+	    lastY = cmd.getY();
             break;
           }
           case LINETO:
           {
-            if (lastType == null || lastType != VectorCommand.CmdType.LINETO)
-            {
-              out.printf("PD%d,%d", cmd.getX(), cmd.getY());
+	    int deltaX = cmd.getX() - lastX;
+	    int deltaY = cmd.getY() - lastY;
+	    double dist = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+	    int numSegments = ((int) (dist / MAX_SEGMENT_LENGTH)) + 1;
+            for(int i = 0; i < numSegments; i++) {
+              int x = (int) (lastX + deltaX * (i + 1) / (double) numSegments);
+              int y = (int) (lastY + deltaY * (i + 1) / (double) numSegments);
+              if (lastType == null || lastType != VectorCommand.CmdType.LINETO)
+              {
+                out.printf("PD%d,%d", x, y);
+                lastType = cmd.getType(); // for the loop to behave
+              }
+              else
+              {
+                out.printf(",%d,%d", x, y);
+              }
             }
-            else
-            {
-              out.printf(",%d,%d", cmd.getX(), cmd.getY());
-            }
+	    lastX = cmd.getX();
+	    lastY = cmd.getY();
             break;
           }
         }
